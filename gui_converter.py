@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 GUI Converter TCVN3 → Unicode cho Excel
 Modern Dark Theme with Beautiful UI
@@ -443,7 +443,7 @@ class ConverterGUI:
         
         opt1 = ttk.Checkbutton(
             left_opts,
-            text="⚡ Bỏ qua cells đã là Unicode chuẩn (tăng tốc 50-80%)",
+            text="⚡ Bỏ qua cells đã là Unicode chuẩn",
             variable=self.skip_unicode,
             style="Modern.TCheckbutton",
             command=self.on_skip_unicode_changed
@@ -722,7 +722,8 @@ class ConverterGUI:
         try:
             # Run preview in thread to avoid freezing UI
             def preview_thread():
-                samples = preview_conversion(self.input_file.get(), max_samples=100)
+                # Lấy TẤT CẢ cells (không giới hạn) để review đầy đủ
+                samples = preview_conversion(self.input_file.get(), max_samples=None)
                 self.preview_data = samples
                 
                 # Update UI in main thread
@@ -752,7 +753,7 @@ class ConverterGUI:
         unicode_cells = [s for s in samples if s.was_unicode]
         tcvn3_cells = [s for s in samples if not s.was_unicode]
         
-        self.preview_text.insert(tk.END, f"📊 Tìm thấy {len(samples)} mẫu (tối đa 100):\n\n")
+        self.preview_text.insert(tk.END, f"📊 Tìm thấy {len(samples)} cells có text:\n\n")
         
         if unicode_cells:
             self.preview_text.insert(tk.END, f"✅ {len(unicode_cells)} cells đã là Unicode chuẩn")
@@ -766,8 +767,9 @@ class ConverterGUI:
         
         self.preview_text.insert(tk.END, "\n" + "="*80 + "\n\n")
         
-        # Show samples
-        for i, log in enumerate(samples[:50], 1):  # Show first 50
+        # Show samples (chỉ hiển thị 50 đầu tiên để không lag UI, nhưng data đầy đủ)
+        display_limit = 50
+        for i, log in enumerate(samples[:display_limit], 1):
             status = "✅ Unicode" if log.was_unicode else "🔄 TCVN3"
             self.preview_text.insert(tk.END, f"[{i}] {status} | Sheet: {log.sheet} | Row: {log.row} | Col: {log.col_name}\n")
             self.preview_text.insert(tk.END, f"    TRƯỚC:  {log.original}\n")
@@ -780,8 +782,9 @@ class ConverterGUI:
             
             self.preview_text.insert(tk.END, "\n")
         
-        if len(samples) > 50:
-            self.preview_text.insert(tk.END, f"\n... và {len(samples) - 50} mẫu khác\n")
+        if len(samples) > display_limit:
+            self.preview_text.insert(tk.END, f"\n... và {len(samples) - display_limit} cells khác\n")
+            self.preview_text.insert(tk.END, f"💡 Xem đầy đủ {len(unicode_cells)} cells Unicode trong 'Review & Chọn'\n")
         
         # Ask for confirmation
         msg = f"Tìm thấy {len(tcvn3_cells)} cells cần convert.\n\n"
@@ -1026,11 +1029,25 @@ class ConverterGUI:
             messagebox.showwarning("Cảnh báo", "Vui lòng Preview trước!")
             return
         
+        # Import helper function
+        from convert_excel_tcvn3 import is_likely_non_text_content
+        
         # Filter Unicode cells
-        unicode_cells = [cell for cell in self.preview_data if cell.was_unicode]
+        all_unicode_cells = [cell for cell in self.preview_data if cell.was_unicode]
+        
+        # Filter out non-text content (số, dấu, date...)
+        unicode_cells = [
+            cell for cell in all_unicode_cells 
+            if not is_likely_non_text_content(cell.original)
+        ]
+        
+        filtered_count = len(all_unicode_cells) - len(unicode_cells)
         
         if not unicode_cells:
-            messagebox.showinfo("Thông báo", "Không có cells Unicode nào để review!")
+            msg = "Không có cells Unicode text nào cần review!"
+            if filtered_count > 0:
+                msg += f"\n\n(Đã lọc {filtered_count} cells không phải text: số, dấu, date...)"
+            messagebox.showinfo("Thông báo", msg)
             return
         
         # Create review dialog
@@ -1045,9 +1062,13 @@ class ConverterGUI:
         header_frame = ttk.Frame(dialog, style="Modern.TFrame", padding=15)
         header_frame.pack(fill=tk.X)
         
+        title_text = f"🔍 Review {len(unicode_cells)} Unicode Text Cells"
+        if filtered_count > 0:
+            title_text += f" (lọc {filtered_count} không phải text)"
+        
         ttk.Label(
             header_frame,
-            text=f"🔍 Review {len(unicode_cells)} Unicode Cells",
+            text=title_text,
             style="Header.TLabel",
             font=("Segoe UI", 14, "bold")
         ).pack(side=tk.LEFT)
@@ -1060,28 +1081,65 @@ class ConverterGUI:
             font=("Segoe UI", 9)
         ).pack(side=tk.RIGHT)
         
-        # Toolbar
-        toolbar = ttk.Frame(dialog, style="Modern.TFrame", padding=(15, 0, 15, 10))
-        toolbar.pack(fill=tk.X)
+        # Toolbar Row 1 - Basic actions
+        toolbar1 = ttk.Frame(dialog, style="Modern.TFrame", padding=(15, 0, 15, 5))
+        toolbar1.pack(fill=tk.X)
         
         ttk.Button(
-            toolbar,
+            toolbar1,
             text="✅ Chọn Tất Cả",
             command=lambda: self.select_all_review(tree, True),
             style="Secondary.TButton"
         ).pack(side=tk.LEFT, padx=(0, 5))
         
         ttk.Button(
-            toolbar,
+            toolbar1,
             text="❌ Bỏ Chọn Tất Cả",
             command=lambda: self.select_all_review(tree, False),
             style="Secondary.TButton"
         ).pack(side=tk.LEFT, padx=(0, 5))
         
         ttk.Button(
-            toolbar,
+            toolbar1,
             text="🔄 Đảo Ngược",
             command=lambda: self.invert_selection_review(tree),
+            style="Secondary.TButton"
+        ).pack(side=tk.LEFT)
+        
+        # Toolbar Row 2 - Advanced selection
+        toolbar2 = ttk.Frame(dialog, style="Modern.TFrame", padding=(15, 0, 15, 10))
+        toolbar2.pack(fill=tk.X)
+        
+        # Quick filter input
+        ttk.Label(
+            toolbar2,
+            text="🔍 Chọn nhanh:",
+            background=ModernTheme.BG_DARK,
+            foreground=ModernTheme.TEXT_PRIMARY,
+            font=("Segoe UI", 9)
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        
+        filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(
+            toolbar2,
+            textvariable=filter_var,
+            width=20,
+            style="Modern.TEntry",
+            font=("Segoe UI", 9)
+        )
+        filter_entry.pack(side=tk.LEFT, padx=(0, 5))
+        
+        ttk.Button(
+            toolbar2,
+            text="✓ Chọn có chứa",
+            command=lambda: self.select_by_text(tree, filter_var.get(), True),
+            style="Secondary.TButton"
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        
+        ttk.Button(
+            toolbar2,
+            text="✗ Bỏ chọn có chứa",
+            command=lambda: self.select_by_text(tree, filter_var.get(), False),
             style="Secondary.TButton"
         ).pack(side=tk.LEFT)
         
@@ -1149,7 +1207,7 @@ class ConverterGUI:
         
         tree.pack(fill=tk.BOTH, expand=True)
         
-        # Bind double-click to toggle
+        # Bind events
         def toggle_skip(event):
             item = tree.selection()[0] if tree.selection() else None
             if item:
@@ -1165,6 +1223,60 @@ class ConverterGUI:
         
         tree.bind("<Double-1>", toggle_skip)
         tree.bind("<Return>", toggle_skip)
+        tree.bind("<space>", toggle_skip)  # Spacebar cũng toggle
+        
+        # Right-click context menu
+        context_menu = tk.Menu(tree, tearoff=0, bg=ModernTheme.BG_LIGHT, fg=ModernTheme.TEXT_PRIMARY)
+        context_menu.add_command(label="✅ Chọn (Bỏ qua)", command=lambda: self.toggle_selected_items(tree, True))
+        context_menu.add_command(label="❌ Bỏ chọn (Convert)", command=lambda: self.toggle_selected_items(tree, False))
+        context_menu.add_separator()
+        context_menu.add_command(label=" Chọn tất cả giống text này", command=lambda: self.select_by_current_text(tree, True))
+        context_menu.add_command(label=" Bỏ chọn tất cả giống text này", command=lambda: self.select_by_current_text(tree, False))
+        
+        def show_context_menu(event):
+            # Check item under cursor
+            item = tree.identify_row(event.y)
+            if item:
+                # Only change selection if right-clicked item is NOT already selected
+                if item not in tree.selection():
+                    tree.selection_set(item)
+                # Show menu
+                context_menu.post(event.x_root, event.y_root)
+        
+        tree.bind("<Button-3>", show_context_menu)  # Right-click
+        
+        # Shift+Click for range selection
+        last_clicked_item = [None]  # Use list to allow modification in nested function
+        
+        def on_tree_click(event):
+            item = tree.identify_row(event.y)
+            if not item:
+                return
+            
+            # Check if Shift is pressed
+            if event.state & 0x0001:  # Shift key
+                if last_clicked_item[0] and last_clicked_item[0] in tree.get_children():
+                    # Select range
+                    all_items = tree.get_children()
+                    start_idx = all_items.index(last_clicked_item[0])
+                    end_idx = all_items.index(item)
+                    
+                    # Ensure start < end
+                    if start_idx > end_idx:
+                        start_idx, end_idx = end_idx, start_idx
+                    
+                    # Select range
+                    for i in range(start_idx, end_idx + 1):
+                        tree.selection_add(all_items[i])
+                else:
+                    # No previous selection, just select current
+                    tree.selection_set(item)
+                    last_clicked_item[0] = item
+            else:
+                # Normal click, remember this item
+                last_clicked_item[0] = item
+        
+        tree.bind("<Button-1>", on_tree_click, add="+")  # Add to existing bindings
         
         # Bottom buttons
         bottom_frame = ttk.Frame(dialog, style="Modern.TFrame", padding=15)
@@ -1172,10 +1284,10 @@ class ConverterGUI:
         
         info_label = ttk.Label(
             bottom_frame,
-            text="💡 Double-click hoặc Enter để toggle Skip/Convert",
+            text="💡 Tips: Shift+Click = chọn dãy | Right-click = menu hàng loạt | Double-click/Enter/Space = toggle 1 ô",
             background=ModernTheme.BG_DARK,
             foreground=ModernTheme.TEXT_MUTED,
-            font=("Segoe UI", 9)
+            font=("Segoe UI", 8)
         )
         info_label.pack(side=tk.LEFT)
         
@@ -1221,6 +1333,76 @@ class ConverterGUI:
             values = list(tree.item(item)["values"])
             values[0] = status
             tree.item(item, values=values)
+    
+    def select_by_text(self, tree, search_text: str, select: bool):
+        """Select/deselect items containing search text"""
+        if not search_text.strip():
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập text cần tìm")
+            return
+        
+        search_text = search_text.strip().lower()
+        count = 0
+        
+        for item in tree.get_children():
+            values = tree.item(item)["values"]
+            cell_text = str(values[4]).lower()  # Text column
+            
+            if search_text in cell_text:
+                cell_id = tree.item(item)["tags"][0]
+                self.skip_selection[cell_id] = select
+                
+                status = "✅ Bỏ qua" if select else "❌ Convert"
+                values = list(values)
+                values[0] = status
+                tree.item(item, values=values)
+                count += 1
+        
+        if count > 0:
+            messagebox.showinfo("Thành công", f"Đã {'chọn' if select else 'bỏ chọn'} {count} ô chứa '{search_text}'")
+        else:
+            messagebox.showinfo("Thông báo", f"Không tìm thấy ô nào chứa '{search_text}'")
+    
+    def toggle_selected_items(self, tree, select: bool):
+        """Toggle currently selected tree items"""
+        selection = tree.selection()
+        if not selection:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn ít nhất một ô")
+            return
+        
+        for item in selection:
+            cell_id = tree.item(item)["tags"][0]
+            self.skip_selection[cell_id] = select
+            
+            status = "✅ Bỏ qua" if select else "❌ Convert"
+            values = list(tree.item(item)["values"])
+            values[0] = status
+            tree.item(item, values=values)
+    
+    def select_by_current_text(self, tree, select: bool = True):
+        """Select/deselect all items with same text as current"""
+        selection = tree.selection()
+        if not selection:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một ô để lấy text mẫu")
+            return
+        
+        current_item = selection[0]
+        current_text = str(tree.item(current_item)["values"][4]).strip()
+        
+        count = 0
+        for item in tree.get_children():
+            values = tree.item(item)["values"]
+            if str(values[4]).strip() == current_text:
+                cell_id = tree.item(item)["tags"][0]
+                self.skip_selection[cell_id] = select
+                
+                status = "✅ Bỏ qua" if select else "❌ Convert"
+                values = list(values)
+                values[0] = status
+                tree.item(item, values=values)
+                count += 1
+        
+        action = "chọn" if select else "bỏ chọn"
+        messagebox.showinfo("Thành công", f"Đã {action} {count} ô giống text '{current_text}'")
     
     def cancel_review(self, dialog):
         """Cancel review and reset selections"""

@@ -13,7 +13,7 @@ def build_exe():
     # Đường dẫn hiện tại
     current_dir = Path(__file__).parent
     
-    # Tham số PyInstaller
+    # Tham số PyInstaller - Optimized for size
     pyinstaller_args = [
         'gui_converter.py',                    # File chính
         '--name=TCVN3_Converter_Pro',          # Tên file exe
@@ -28,24 +28,39 @@ def build_exe():
         '--add-data=icon_preview.png;.',        # Fallback icon
         
         # Metadata
-        '--version-file=version_info.txt',      # Version info (tạo sau)
+        '--version-file=version_info.txt',      # Version info
         
-        # Optimization
+        # Optimization - Giảm kích thước
         '--optimize=2',                         # Optimize bytecode
+        # '--strip',                            # Strip debug symbols (requires binutils on Windows)
         '--clean',                              # Clean cache trước khi build
+        
+        # Exclude unused modules - QUAN TRỌNG để giảm size
+        '--exclude-module=matplotlib',
+        # numpy is required by pandas - DO NOT EXCLUDE
+        '--exclude-module=scipy',
+        '--exclude-module=PIL.ImageQt',
+        '--exclude-module=PyQt5',
+        '--exclude-module=PyQt6',
+        '--exclude-module=PySide2',
+        '--exclude-module=PySide6',
+        '--exclude-module=notebook',
+        '--exclude-module=IPython',
+        '--exclude-module=jinja2',
+        '--exclude-module=xml.dom',
+        '--exclude-module=xml.sax',
         
         # Thư mục output
         '--distpath=dist',
         '--workpath=build',
         '--specpath=.',
         
-        # Hidden imports (nếu cần)
-        '--hidden-import=openpyxl',
-        '--hidden-import=pandas',
-        '--hidden-import=tkinter',
+        # Hidden imports (chỉ những gì cần)
+        '--hidden-import=openpyxl.cell._writer',
+        '--hidden-import=openpyxl.styles.stylesheet',
         
-        # Console hiển thị (tắt cho production)
-        # '--noconsole',  # Không hiện console window
+        # UPX compression (nếu có UPX installed)
+        # '--upx-dir=C:/upx',  # Uncomment nếu có UPX
     ]
     
     print("="*60)

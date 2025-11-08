@@ -20,11 +20,8 @@ import pandas as pd
 from bs4 import BeautifulSoup
 
 # Optional: chardet for encoding detection
-try:
-    import chardet
-    HAS_CHARDET = True
-except ImportError:
-    HAS_CHARDET = False
+import importlib.util
+HAS_CHARDET = importlib.util.find_spec("chardet") is not None
 
 
 # Một tập ký tự “hay gặp” trong TCVN3 (.VnTime)

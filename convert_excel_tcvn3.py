@@ -133,7 +133,12 @@ def load_tcvn3_map() -> Dict[str, str]:
 def looks_like_unicode_vietnamese(s: str) -> bool:
     """
     Kiểm tra xem chuỗi có phải là tiếng Việt Unicode hợp lệ hay không.
-    Nếu toàn bộ ký tự đều nằm trong bảng chữ VN Unicode chuẩn → return True
+    
+    LOGIC TỐI ƯU v2.1:
+    1. Empty/whitespace → TRUE (bỏ qua)
+    2. Chỉ số + dấu (VD: "123", "---", "2024-11-09") → TRUE (không cần review)
+    3. Có chữ cái VN Unicode + không có ký tự lạ → TRUE
+    4. Có ký tự lạ (TCVN3) → FALSE (cần convert)
     
     Returns:
         True nếu chuỗi đã là Unicode Việt hợp lệ (bỏ qua không cần convert)
@@ -142,17 +147,62 @@ def looks_like_unicode_vietnamese(s: str) -> bool:
     if not s:
         return True
     
+    s_stripped = s.strip()
+    if not s_stripped:
+        return True  # Chỉ whitespace
+    
+    # Quick check: Chỉ có số, dấu câu cơ bản (không có chữ)
+    # VD: "123", "---", "...", "2024-11-09", "1,234.56"
+    has_letter = False
+    
+    for ch in s:
+        if ch.isalpha():
+            has_letter = True
+            break
+    
+    # Nếu không có chữ cái → OK (số, dấu, date...)
+    if not has_letter:
+        return True
+    
+    # Có chữ cái → Check kỹ hơn
     for ch in s:
         # Cho qua nếu trong whitelist
         if ch in _VIET_UNI_OK:
             continue
-        # Hoặc là ký tự có category dấu/khoảng trắng/punct bình thường
+        # Hoặc là ký tự có category dấu/khoảng trắng/punct/symbol bình thường
         cat = unicodedata.category(ch)
-        if cat.startswith(('Z', 'P', 'C')):  # Separator, Punctuation, Control
+        if cat.startswith(('Z', 'P', 'C', 'S')):  # Separator, Punctuation, Control, Symbol
             continue
         # Gặp ký tự lạ ngoài whitelist
         return False
     return True
+
+
+def is_likely_non_text_content(s: str) -> bool:
+    """
+    Kiểm tra xem cell có phải là nội dung không phải text tiếng Việt.
+    Dùng để filter ra các cell không cần review (số, date, dấu...)
+    
+    Returns:
+        True nếu không cần review (số thuần, date, dấu câu...)
+        False nếu cần review (có text chữ cái)
+    """
+    if not s or not s.strip():
+        return True
+    
+    s_stripped = s.strip()
+    
+    # Chỉ có số + dấu phân cách
+    if s_stripped.replace('.', '').replace(',', '').replace('-', '').replace('/', '').replace(':', '').isdigit():
+        return True  # VD: "123", "2024-11-09", "1,234.56", "10:30"
+    
+    # Chỉ có dấu câu/ký hiệu (không có chữ, số)
+    has_alnum = any(ch.isalnum() for ch in s_stripped)
+    if not has_alnum:
+        return True  # VD: "---", "...", "***", "- - -"
+    
+    # Có chữ cái hoặc chữ số mixed → cần review
+    return False
 
 
 def tcvn3_to_unicode(s: str) -> str:
@@ -223,12 +273,12 @@ def convert_excel(
         if progress_callback:
             progress_callback(sheet, sheet_idx, total_sheets)
             
-        df = pd.read_excel(xls, sheet_name=sheet, dtype=object)  # giữ nguyên kiểu
+        df = pd.read_excel(xls, sheet_name=sheet, header=None, dtype=object)  # Không dùng header tự động
         stats.sheets_processed += 1
 
-        # Xử lý từng cell
+        # Xử lý từng cell (bao gồm cả dòng đầu tiên)
         for row_idx in range(len(df)):
-            for col_idx, col_name in enumerate(df.columns):
+            for col_idx in range(len(df.columns)):
                 cell_value = df.iloc[row_idx, col_idx]
                 stats.total_cells += 1
                 
@@ -238,7 +288,8 @@ def convert_excel(
                     original = cell_value
                     
                     # Kiểm tra xem đã là Unicode chuẩn chưa
-                    cell_id = f"{sheet}_{row_idx + 2}_{col_idx}"
+                    # Excel row is 1-indexed, so row_idx + 1
+                    cell_id = f"{sheet}_{row_idx + 1}_{col_idx}"
                     is_unicode = looks_like_unicode_vietnamese(original)
                     
                     if skip_unicode and is_unicode:
@@ -259,15 +310,15 @@ def convert_excel(
                         
                         # Track for highlighting
                         if highlight_converted:
-                            # Excel uses 1-indexed, +1 for header
-                            converted_cells_coords.append((sheet, row_idx + 2, col_idx + 1))
+                            # Excel uses 1-indexed
+                            converted_cells_coords.append((sheet, row_idx + 1, col_idx + 1))
                         
                         # Log chi tiết
                         log = ConversionLog(
                             sheet=sheet,
-                            row=row_idx + 2,  # +2 vì header và 1-indexed
+                            row=row_idx + 1,  # 1-indexed for Excel
                             col=col_idx,
-                            col_name=str(col_name),
+                            col_name=f"Col_{col_idx}",  # Generic column name
                             original=original,
                             converted=converted,
                             was_unicode=is_unicode,
@@ -276,7 +327,7 @@ def convert_excel(
                     else:
                         stats.unchanged_cells += 1
 
-        df.to_excel(out_writer, sheet_name=sheet, index=False)
+        df.to_excel(out_writer, sheet_name=sheet, index=False, header=False)
 
     out_writer.close()
     
@@ -305,14 +356,14 @@ def convert_excel(
 
 def preview_conversion(
     input_path: str | Path,
-    max_samples: int = 50,
+    max_samples: int = 9999999,
 ) -> List[ConversionLog]:
     """
     Xem trước các cell sẽ được convert mà không thực sự ghi file.
     
     Args:
         input_path: Đường dẫn đến file Excel input
-        max_samples: Số lượng mẫu tối đa để hiển thị
+        max_samples: Số lượng mẫu tối đa để hiển thị (None = tất cả)
         
     Returns:
         List[ConversionLog]: Danh sách các cell sẽ được convert
@@ -324,15 +375,14 @@ def preview_conversion(
     xls = pd.ExcelFile(input_path, engine="openpyxl")
     
     for sheet in xls.sheet_names:
-        df = pd.read_excel(xls, sheet_name=sheet, dtype=object)
+        # Không dùng header tự động để đọc cả dòng 1
+        df = pd.read_excel(xls, sheet_name=sheet, header=None, dtype=object)
         
         for row_idx in range(len(df)):
-            if len(samples) >= max_samples:
-                return samples
-                
-            for col_idx, col_name in enumerate(df.columns):
-                if len(samples) >= max_samples:
-                    return samples
+            for col_idx in range(len(df.columns)):
+                # Kiểm tra giới hạn nếu có
+                if max_samples is not None and len(samples) >= max_samples:
+                    break
                     
                 cell_value = df.iloc[row_idx, col_idx]
                 
@@ -341,18 +391,26 @@ def preview_conversion(
                     is_unicode = looks_like_unicode_vietnamese(original)
                     converted = tcvn3_to_unicode(original)
                     
-                    # Chỉ log những cell khác nhau hoặc những cell được đánh dấu TCVN3
-                    if converted != original or not is_unicode:
-                        log = ConversionLog(
-                            sheet=sheet,
-                            row=row_idx + 2,
-                            col=col_idx,
-                            col_name=str(col_name),
-                            original=original,
-                            converted=converted,
-                            was_unicode=is_unicode,
-                        )
-                        samples.append(log)
+                    # Log TẤT CẢ các cell có text (bao gồm cả Unicode)
+                    # để user có thể review đầy đủ
+                    log = ConversionLog(
+                        sheet=sheet,
+                        row=row_idx + 1,  # 1-indexed for Excel
+                        col=col_idx,
+                        col_name=f"Col_{col_idx}",
+                        original=original,
+                        converted=converted,
+                        was_unicode=is_unicode,
+                    )
+                    samples.append(log)
+            
+            # Break outer loop if we have enough samples
+            if max_samples is not None and len(samples) >= max_samples:
+                break
+        
+        # Break sheet loop if we have enough samples
+        if max_samples is not None and len(samples) >= max_samples:
+            break
     
     return samples
 
